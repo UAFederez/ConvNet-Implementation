@@ -201,6 +201,8 @@ class ConvLayer(Layer):
         self.conv  = np.repeat(np.expand_dims(self.biases, axis = (0, 2)), self.conv.shape[0], axis = 0) + self.conv
         self.a_out = np.maximum(0, self.conv) # ReLU
 
+        #print('out shape:', self.a_out.shape)
+
         return self.a_out
     
     # dLdA  : (4-D) -> (image_idx, num_filter, out_h, out_w)
@@ -229,9 +231,10 @@ class ConvLayer(Layer):
         # spatial dimensions i.e. the last 2 in dZ.shape
         self.dZ_prev = self.dLdZ
 
-        if self.stride != 1:            
+        if self.stride != 1 and self.mode == 'valid':            
             pad_loc_y    = np.repeat(np.arange(self.dZ_prev.shape[2])[1::], 1)
             pad_loc_x    = np.repeat(np.arange(self.dZ_prev.shape[3])[1::], 1)
+            #print('before padding dzPrev', self.dZ_prev.shape, self.a_out.shape)
             self.dZ_prev = np.insert(np.insert(self.dZ_prev, pad_loc_y, 0, axis = 2), pad_loc_x, 0, axis = 3)
 
         # Pad dZ such that a valid convolution with a stride of 1 will result in
@@ -240,6 +243,8 @@ class ConvLayer(Layer):
 
         num_pad_y = int(np.ceil((source_h - self.dZ_prev.shape[2] + self.filter_size - 1) / 2))
         num_pad_x = int(np.ceil((source_w - self.dZ_prev.shape[3] + self.filter_size - 1) / 2))
+
+        #print(num_pad_x, num_pad_y, source_h, source_w, self.dZ_prev.shape)
 
         paddings = ((0, 0), (0, 0), (num_pad_y, num_pad_y), (num_pad_x, num_pad_x))
         self.padded_dZ_prev = np.pad(self.dZ_prev, paddings, mode = 'constant')
