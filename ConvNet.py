@@ -65,7 +65,11 @@ class ConvNet:
                 progress_batch = batch_idx / num_batches
                 progress_bar   = ('=' * (math.ceil(progress_batch * 30) - 1)) + '>'
                 progress_bar   = progress_bar + (' ' * (30 - len(progress_bar)))
-                output_string  = '[Epoch {:2}/{:2}] - [{}] - loss: {:.4f} - train_accuracy: {:.4f}'.format(epoch + 1, num_epochs, progress_bar, cost, acc)
+                output_string  = '[Epoch {:2}/{:2}] - [{}] - loss: {:.4f} - train_accuracy: {:.4f}'.format(
+                    epoch + 1, num_epochs, progress_bar, 
+                    cost if batch_idx < num_batches - 1 else avg_loss, 
+                    acc  if batch_idx < num_batches - 1 else avg_acc
+                )
                 print(output_string, end = '\r')
 
             print()
@@ -105,7 +109,6 @@ class DenseLayer(Layer):
         self.batch_size  = input_batch.shape[1]
 
         if self.weights is None:
-            # Xavier initialization
             num_features = input_batch.shape[0]
             self.weights = np.random.randn(self.num_units, num_features) / np.sqrt(2.0 * num_features)
             self.vdw     = np.zeros(self.weights.shape)
@@ -137,7 +140,7 @@ class ConvLayer(Layer):
     def __init__(self, num_filters, filter_size, stride = 1, mode = 'valid'):
         self.num_filters = num_filters
         self.filter_size = filter_size
-        self.stride = stride;
+        self.stride = stride
         self.mode   = mode
 
         self.biases  = np.zeros((num_filters, 1))
@@ -160,16 +163,14 @@ class ConvLayer(Layer):
             self.filters = np.random.randn(self.num_filters, self.img_channels, 
                                            self.filter_size, self.filter_size)
             self.vdw     = np.zeros(self.filters.shape)
-            # Glorot initialization
             self.filters = self.filters / np.sqrt(2.0 * (self.filter_size ** 2))
         
         if self.mode == 'same':
             pad_x  = int(np.ceil((self.stride * (img_w - 1) - img_w + self.filter_size) / 2.0))
             pad_y  = int(np.ceil((self.stride * (img_h - 1) - img_h + self.filter_size) / 2.0))
-            padded = np.zeros((self.batch_size, self.img_channels, img_h + pad_y * 2, img_w + pad_x * 2))
 
-            padded[:, :, pad_y:img_h+pad_y, pad_x:img_w+pad_x ] = self.input_batch
-            self.input_batch = padded
+            paddings = ((0, 0), (0, 0), (pad_y, pad_y), (pad_x, pad_x))
+            self.input_batch = np.pad(self.input_batch, paddings, mode = 'constant')
 
         self.out_h  = (self.input_batch.shape[2] - self.filter_size) // self.stride + 1
         self.out_w  = (self.input_batch.shape[3] - self.filter_size) // self.stride + 1
@@ -240,19 +241,9 @@ class ConvLayer(Layer):
         num_pad_y = int(np.ceil((source_h - self.dZ_prev.shape[2] + self.filter_size - 1) / 2))
         num_pad_x = int(np.ceil((source_w - self.dZ_prev.shape[3] + self.filter_size - 1) / 2))
 
-        self.padded_dZ_prev = np.zeros((
-            self.orig_shape[0], 
-            self.dZ_prev.shape[1],
-            self.dZ_prev.shape[2] + (2 * num_pad_y),
-            self.dZ_prev.shape[3] + (2 * num_pad_x),
-        ))
-        dZ_prev_h = self.dZ_prev.shape[2]
-        dZ_prev_w = self.dZ_prev.shape[3]
-
-        self.padded_dZ_prev[:, :, num_pad_y:dZ_prev_h+num_pad_y, num_pad_x:dZ_prev_w+num_pad_x ] = self.dZ_prev
+        paddings = ((0, 0), (0, 0), (num_pad_y, num_pad_y), (num_pad_x, num_pad_x))
+        self.padded_dZ_prev = np.pad(self.dZ_prev, paddings, mode = 'constant')
         dZ_prev_strides = self.padded_dZ_prev.strides
-
-        #print('padded dZprev', self.padded_dZ_prev.shape)
 
         self.dZ_prev_strides = (
             dZ_prev_strides[0],      
@@ -274,11 +265,8 @@ class ConvLayer(Layer):
             strides = self.dZ_prev_strides
         )
 
-        #print('windows, strides, windows shape', self.dZ_prev_windows_shape, self.dZ_prev_strides, self.dZ_prev_windows.shape)
-        
         # Rotate the filters 180 degrees
-        self.rotated_filters = np.rot90(np.einsum('fchw->cfhw', self.filters), 2, axes = (2, 3))
-        #print(self.rotated_filters.shape, self.dLdZ.shape)
+        self.rotated_filters = np.rot90(np.swapaxes(self.filters, 0, 1), 2, axes = (2, 3))
 
         # Convolve the padded dZ with the rotated filters
         self.dZ_prev_conv = np.einsum('xfhwij,cfij->xchw', self.dZ_prev_windows, self.rotated_filters)
