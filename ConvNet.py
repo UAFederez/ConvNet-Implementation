@@ -1,3 +1,4 @@
+from os import access
 import numpy as np
 import math
 
@@ -20,6 +21,46 @@ class ConvNet:
     def add(self, layer):
         self.layers.append(layer)
 
+    def evaluate(self, X_test, Y_test):
+        total_size  = X_test.shape[0]
+        num_batches = total_size // 100
+        X_batches   = np.split(X_test, num_batches, axis = 0)
+        Y_batches   = np.split(Y_test, num_batches, axis = 1)
+
+        avg_acc  = 0.0
+        avg_loss = 0.0
+        num_acc  = 0
+        
+        for batch_idx, (batch_X, batch_Y) in enumerate(zip(X_batches, Y_batches)):
+            forward_output = batch_X
+
+            # Forward pass
+            for layer in self.layers:
+                forward_output = layer.forward(forward_output)
+
+            # Assumes log-loss is used w/ softmax activation
+            loss = -(batch_Y * np.log(forward_output + 1e-5) + (1 - batch_Y) * np.log(1 - forward_output + 1e-5))
+            loss = np.sum(loss, axis = 0)
+            cost = np.average(loss)
+
+            accurate = np.argmax(forward_output, axis = 0) == np.argmax(batch_Y, axis = 0)
+            num_acc += np.sum(accurate)
+            accuracy = np.average(accurate)
+
+            avg_acc  += accuracy  / num_batches
+            avg_loss += cost      / num_batches
+
+            progress_batch = batch_idx / num_batches
+            progress_bar   = ('=' * (math.ceil(progress_batch * 30) - 1)) + '>'
+            progress_bar   = progress_bar + (' ' * (30 - len(progress_bar)))
+            output_string  = '[Epoch 1/1] - [{}] - loss: {:.4f} - train_accuracy: {:.4f}'.format(
+                progress_bar, cost, accuracy 
+            )
+            print(output_string, end = '\r')
+
+        print()
+        return avg_loss, num_acc / total_size
+
     def fit(self, X, Y, num_epochs, learning_rate):
         self.hist_acc  = []
         self.hist_loss = []
@@ -31,15 +72,15 @@ class ConvNet:
             }
 
         num_batches = X.shape[0] // 32
-        X_batches   = np.array(np.split(X, num_batches, axis = 0))
-        Y_batches   = np.array(np.split(Y, num_batches, axis = 1))
+        X_batches   = np.split(X, num_batches, axis = 0)
+        Y_batches   = np.split(Y, num_batches, axis = 1)
 
         for epoch in range(num_epochs):
             avg_acc  = 0.0
             avg_loss = 0.0
-            for batch_idx in range(num_batches):
-                forward_output = X_batches[batch_idx]
-                batch_Y        = Y_batches[batch_idx]
+
+            for batch_idx, (batch_X, batch_Y) in enumerate(zip(X_batches, Y_batches)):
+                forward_output = batch_X
 
                 # Forward pass
                 for layer in self.layers:
