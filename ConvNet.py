@@ -194,19 +194,11 @@ class DenseLayer(Layer):
             'tanh'   : lambda z: np.tanh(z)
         } [activation]
 
-        self.activation_prime = {
-            # This is a
-            'softmax': lambda a: np.diagflat(np.sum(a, axis = 1)) - np.dot(a, a.T),
-            'sigmoid': lambda a: a * (1 - a),
-            'relu'   : lambda a: (a > 0.0),
-            'tanh'   : lambda a: 1 - (a ** 2),
-        } [activation]
-
         self.dL_dz_func = {
-            'softmax': lambda dL_da, da_dz: np.dot(da_dz, dL_da) / self.batch_size,
-            'relu'   : lambda dL_da, da_dz: dL_da * da_dz,
-            'sigmoid': lambda dL_da, da_dz: dL_da * da_dz,
-            'tanh'   : lambda dL_da, da_dz: dL_da * da_dz,
+            'softmax': lambda dL_da, a: (1 + dL_da) * a,
+            'relu'   : lambda dL_da, a: dL_da * (a > 0.0),
+            'sigmoid': lambda dL_da, a: dL_da * (a * (1 - a)),
+            'tanh'   : lambda dL_da, a: dL_da * (1 - a ** 2),
         } [activation]
         
 
@@ -234,9 +226,10 @@ class DenseLayer(Layer):
         return self.a_out
 
     def backward(self, dL_da):
-        self.da_dz = self.activation_prime(self.a_out)
-        self.dL_dz = self.dL_dz_func(dL_da, self.da_dz)
+        self.dL_dz = self.dL_dz_func(dL_da, self.a_out)
 
+        # Shapes being the same are not necessarily indicative of erroneous
+        # computation, but if they're not even the same then something is definitely wrong
         assert self.dL_dz.shape == self.z_out.shape, "[Internal Error] Incorrect gradient calculation"
 
         self.dw = np.dot(self.dL_dz, self.input_batch.T) / self.batch_size
