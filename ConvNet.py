@@ -71,7 +71,7 @@ class ConvNet:
                 'momentum'     : 0.9,
             }
 
-        num_batches = X.shape[0] // 32
+        num_batches = X.shape[0] // 64
         X_batches   = np.split(X, num_batches, axis = 0)
         Y_batches   = np.split(Y, num_batches, axis = 1)
 
@@ -87,7 +87,7 @@ class ConvNet:
                     forward_output = layer.forward(forward_output)
 
                 # Assumes log-loss is used w/ softmax activation
-                loss = -(batch_Y * np.log(forward_output + 1e-5) + (1 - batch_Y) * np.log(1 - forward_output + 1e-5))
+                loss = -(batch_Y * np.log(forward_output))
                 loss = np.sum(loss, axis = 0)
                 cost = np.average(loss)
 
@@ -97,7 +97,7 @@ class ConvNet:
                 avg_loss += cost / num_batches
 
                 # Backward pass
-                backward_output = forward_output - batch_Y
+                backward_output = -(batch_Y / forward_output) + 1e-8 # TODO: assumes softmax log-loss
                 #print(forward_output.shape, batch_Y.shape)
 
                 for layer in reversed(self.layers):
@@ -119,8 +119,54 @@ class ConvNet:
         return self.hist_loss, self.hist_acc
 
 class PoolLayer(Layer):
-    def __init__(self):
-        pass
+    def __init__(self, filter_size = 2, stride = 2, mode = 'avg'):
+        self.mode = mode
+        assert self.mode in ['avg']
+
+        self.filter_size = filter_size
+        self.stride = stride
+
+    def forward(self, input_batch):
+        self.input_batch = input_batch
+
+        self.orig_shape   = input_batch.shape
+        self.batch_size   = input_batch.shape[0]
+        self.img_channels = input_batch.shape[1]
+
+        self.out_h  = (self.input_batch.shape[2] - self.filter_size) // self.stride + 1
+        self.out_w  = (self.input_batch.shape[3] - self.filter_size) // self.stride + 1
+
+        img_strides = self.input_batch.strides
+
+        self.conv_strides = (
+            img_strides[0],                                  # next image
+            0 if self.img_channels == 1 else img_strides[1], # next channel
+            img_strides[2] * self.stride,                    # next window (y)
+            img_strides[3] * self.stride,                    # next window (x)
+            img_strides[2],                                  # next cell (y)
+            img_strides[3]                                   # next cell (x)
+        )
+
+        self.window_shape = (
+            self.batch_size, self.img_channels, self.out_h, self.out_w,
+            self.filter_size, self.filter_size,
+        )
+
+        self.conv_windows = np.lib.stride_tricks.as_strided(
+            self.input_batch,
+            shape   = self.window_shape,
+            strides = self.conv_strides,
+        )
+        
+        self.pooled = np.average(self.conv_windows, axis = (4, 5))
+        return self.pooled
+    
+    def backward(self, dL_da):
+        self.dZ_next  = np.full(self.input_batch.shape, 1.0 / (self.filter_size ** 2))
+        self.dZ_next *= np.tile(dL_da, (1, 1, self.stride, self.stride))
+
+        assert self.dZ_next.shape == self.input_batch.shape, "[Internal Error] Incorrect gradient calculation {}, {}".format(self.dZ_next.shape, self.pooled.shape)
+        return self.dZ_next
 
 class FlattenLayer(Layer):
     def __init__(self):
@@ -137,7 +183,32 @@ class FlattenLayer(Layer):
 
 class DenseLayer(Layer):
     def __init__(self, num_units, activation = 'softmax'):
+        assert activation in ['softmax', 'relu', 'sigmoid', 'tanh'], 'Please select a supported activation function'
+
         self.num_units  = num_units
+        self.activation_func = activation
+        self.activation = {
+            'softmax': lambda z: np.exp(z) / np.sum(np.exp(z), axis = 0),
+            'sigmoid': lambda z: 1 / (1 + np.exp(-z)),
+            'relu'   : lambda z: np.maximum(0, z),
+            'tanh'   : lambda z: np.tanh(z)
+        } [activation]
+
+        self.activation_prime = {
+            # This is a
+            'softmax': lambda a: np.diagflat(np.sum(a, axis = 1)) - np.dot(a, a.T),
+            'sigmoid': lambda a: a * (1 - a),
+            'relu'   : lambda a: (a > 0.0),
+            'tanh'   : lambda a: 1 - (a ** 2),
+        } [activation]
+
+        self.dL_dz_func = {
+            'softmax': lambda dL_da, da_dz: np.dot(da_dz, dL_da) / self.batch_size,
+            'relu'   : lambda dL_da, da_dz: dL_da * da_dz,
+            'sigmoid': lambda dL_da, da_dz: dL_da * da_dz,
+            'tanh'   : lambda dL_da, da_dz: dL_da * da_dz,
+        } [activation]
+        
 
         self.weights = None
         self.biases  = np.zeros((num_units, 1))
@@ -155,17 +226,24 @@ class DenseLayer(Layer):
             self.vdw     = np.zeros(self.weights.shape)
 
         self.z_out  = np.dot(self.weights, input_batch) + self.biases
-        self.z_out -= self.z_out.max()
-        self.a_out  = np.exp(self.z_out) / np.sum(np.exp(self.z_out), axis = 0)
+        if self.activation_func == 'softmax':
+            self.z_out -= self.z_out.max(axis = 0) # For numerical stability
+        
+        self.a_out  = self.activation(self.z_out)
 
         return self.a_out
 
-    def backward(self, dLdZ):
-        self.dw = np.dot(dLdZ, self.input_batch.T) / self.batch_size
-        self.db = np.sum(dLdZ, axis = 1, keepdims = True) / self.batch_size
+    def backward(self, dL_da):
+        self.da_dz = self.activation_prime(self.a_out)
+        self.dL_dz = self.dL_dz_func(dL_da, self.da_dz)
 
-        self.dA_prev = np.dot(self.weights.T, dLdZ)
+        assert self.dL_dz.shape == self.z_out.shape, "[Internal Error] Incorrect gradient calculation"
 
+        self.dw = np.dot(self.dL_dz, self.input_batch.T) / self.batch_size
+        self.db = np.sum(self.dL_dz, axis = 1, keepdims = True) / self.batch_size  
+
+        self.dA_prev = np.dot(self.weights.T, self.dL_dz)  
+    
         eta = self.optimization_params['momentum']
         lr  = self.optimization_params['learning_rate']
 
