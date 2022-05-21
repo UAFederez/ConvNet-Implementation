@@ -39,7 +39,7 @@ class ConvNet:
                 forward_output = layer.forward(forward_output)
 
             # Assumes log-loss is used w/ softmax activation
-            loss = -(batch_Y * np.log(forward_output + 1e-5) + (1 - batch_Y) * np.log(1 - forward_output + 1e-5))
+            loss = -(batch_Y * np.log(forward_output))
             loss = np.sum(loss, axis = 0)
             cost = np.average(loss)
 
@@ -97,8 +97,7 @@ class ConvNet:
                 avg_loss += cost / num_batches
 
                 # Backward pass
-                backward_output = -(batch_Y / forward_output) + 1e-8 # TODO: assumes softmax log-loss
-                #print(forward_output.shape, batch_Y.shape)
+                backward_output = -(batch_Y / forward_output) + 1e-8 
 
                 for layer in reversed(self.layers):
                     backward_output = layer.backward(backward_output)
@@ -195,11 +194,10 @@ class DenseLayer(Layer):
         } [activation]
 
         self.dL_dz_func = {
-            'softmax': lambda dL_da, a: (1 + dL_da) * a,
             'relu'   : lambda dL_da, a: dL_da * (a > 0.0),
             'sigmoid': lambda dL_da, a: dL_da * (a * (1 - a)),
             'tanh'   : lambda dL_da, a: dL_da * (1 - a ** 2),
-        } [activation]
+        }
         
 
         self.weights = None
@@ -226,7 +224,15 @@ class DenseLayer(Layer):
         return self.a_out
 
     def backward(self, dL_da):
-        self.dL_dz = self.dL_dz_func(dL_da, self.a_out)
+        # since softmax is a vector valued function, i.e the output depends
+        # on all the components of the vector, dL_dz is calculated with a special
+        # case using the Jacobian
+        if self.activation_func == 'softmax':
+            self.diags = np.einsum('kx,kw->xwk', self.a_out, np.identity(self.a_out.shape[0]))
+            self.da_dz = np.einsum('zx,xk->xkz', -self.a_out, self.a_out.T) + self.diags
+            self.dL_dz = np.einsum('xhw,wx->hx', self.da_dz, dL_da)
+        else:
+            self.dL_dz = self.dL_dz_func[self.activation_func](dL_da, self.a_out)
 
         # Shapes being the same are not necessarily indicative of erroneous
         # computation, but if they're not even the same then something is definitely wrong
